@@ -117,6 +117,8 @@ class _DynamoWorkerSpec:
     cuda_visible_devices: str
     rank_offset: int
     label: str
+    # "agg", or "prefill" / "decode" from engine_kwargs.dynamo.disaggregation.shard_roles.
+    role: str = "agg"
 
 
 # --------------------------------------------------------------------------- #
@@ -1046,6 +1048,15 @@ class DynamoHttpServer:
                     tp,
                     kv_events_config_json=kv_events_config_json,
                 )
+                if spec.role != "agg":
+                    disagg = self._dynamo_cfg().get("disaggregation") or {}
+                    kv_transfer = disagg.get("kv_transfer_config") or {
+                        "kv_connector": "NixlConnector",
+                        "kv_role": "kv_both",
+                    }
+                    cmd += ["--disaggregation-mode", spec.role, "--kv-transfer-config", json.dumps(dict(kv_transfer))]
+                    # Every shard runs DP=1, so vLLM's default side-channel port would collide on a node.
+                    env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(self._allocate_tcp_port())
 
             stdout_path = os.path.join(log_dir, f"{spec.label}.log")
             stdout_fp = open(stdout_path, "w")
@@ -3444,6 +3455,9 @@ class DynamoReplica(RolloutReplica):
                 node_to_workers[node_id] = []
                 node_to_specs[node_id] = []
 
+        disagg = ((self.config.engine_kwargs or {}).get("dynamo") or {}).get("disaggregation") or {}
+        shard_roles = list(disagg.get("shard_roles") or []) if disagg.get("enabled") else []
+
         for logical_replica_rank in range(num_logical_replicas):
             start = logical_replica_rank * self.world_size
             end = start + self.world_size
@@ -3472,12 +3486,14 @@ class DynamoReplica(RolloutReplica):
                     # pool's engines when hybrid + standalone share a node in
                     # separate_async.
                     global_replica_rank = self.replica_rank + logical_replica_rank
+                    pool_shard_index = sum(len(specs) for specs in node_to_specs.values())
                     node_to_specs[node_id].append(
                         {
                             "replica_rank": global_replica_rank,
                             "cuda_visible_devices": ",".join(shard_gpus),
                             "rank_offset": shard_idx * tp,
                             "label": f"replica{global_replica_rank}_shard{shard_idx}",
+                            "role": shard_roles[pool_shard_index % len(shard_roles)] if shard_roles else "agg",
                         }
                     )
 
