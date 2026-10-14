@@ -3450,11 +3450,17 @@ class DynamoReplica(RolloutReplica):
 
     def _pd_shard_roles(self) -> list[str]:
         """Apply P/D roles only to the standalone rollout pool."""
-        disagg = ((self.config.engine_kwargs or {}).get("dynamo") or {}).get("disaggregation") or {}
+        dynamo_config = (self.config.engine_kwargs or {}).get("dynamo") or {}
+        disagg = dynamo_config.get("disaggregation") or {}
         shard_roles = list(disagg.get("shard_roles") or []) if disagg.get("enabled") else []
         if self.rollout_mode != RolloutMode.STANDALONE:
             shard_roles = []
         if shard_roles:
+            free_engine = str(dynamo_config.get("free_engine_on_train", False)).strip().lower()
+            if self.config.free_cache_engine or free_engine in {"1", "true", "yes", "on"}:
+                raise ValueError(
+                    "P/D requires resident engines: set free_cache_engine=false and free_engine_on_train=false"
+                )
             if set(shard_roles) != {"prefill", "decode"}:
                 raise ValueError("P/D shard_roles must contain both prefill and decode, with no other roles")
             logger.info("[DynamoReplica pool] P/D roles=%s mode=%s", shard_roles, self.rollout_mode)

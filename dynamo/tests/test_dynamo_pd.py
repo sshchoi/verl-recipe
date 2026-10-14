@@ -9,12 +9,12 @@ import zmq.asyncio
 from recipe.dynamo.dynamo_async_server import DynamoHttpServer, DynamoReplica, RolloutMode
 
 
-def replica(mode, *, standalone_only=False, sleeping=True, roles=None, enabled=True):
+def replica(mode, *, standalone_only=False, sleeping=False, roles=None, enabled=True, free_engine=False):
     result = object.__new__(DynamoReplica)
     result.rollout_mode = mode
     result.config = SimpleNamespace(
         free_cache_engine=sleeping,
-        engine_kwargs={"dynamo": {"disaggregation": {
+        engine_kwargs={"dynamo": {"free_engine_on_train": free_engine, "disaggregation": {
             "enabled": enabled,
             "standalone_only": standalone_only,
             "shard_roles": roles if roles is not None else ["prefill", "decode"],
@@ -112,3 +112,18 @@ def test_update_fails_closed_on_unconfirmed_cache_or_version(monkeypatch, failur
             version.assert_not_called()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("sleeping,free_engine", [(True, False), (False, True), (True, True), (False, "true")])
+def test_standalone_pd_refuses_either_sleep_switch(sleeping, free_engine):
+    with pytest.raises(ValueError, match="P/D requires resident engines"):
+        replica(RolloutMode.STANDALONE, sleeping=sleeping, free_engine=free_engine)._pd_shard_roles()
+
+
+@pytest.mark.parametrize("free_engine", [False, "false", None])
+def test_standalone_resident_pd_is_allowed(free_engine):
+    assert replica(RolloutMode.STANDALONE, free_engine=free_engine)._pd_shard_roles() == ["prefill", "decode"]
+
+
+def test_aggregated_pool_can_still_sleep():
+    assert replica(RolloutMode.STANDALONE, enabled=False, sleeping=True)._pd_shard_roles() == []
