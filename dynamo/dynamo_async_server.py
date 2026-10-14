@@ -2720,6 +2720,33 @@ class DynamoHttpServer:
         await self._engine_method_all("reset_prefix_cache")
 
     async def set_global_steps(self, global_steps: int):
+        if not self._is_sglang():
+            states = await self.collective_rpc("get_weight_update_state", timeout=8)
+            expected_tp = self.config.tensor_model_parallel_size
+            valid = len(states) == len(self._control_endpoints) and bool(states)
+            for shard in states:
+                valid = valid and isinstance(shard, list) and len(shard) == expected_tp
+                if not isinstance(shard, list):
+                    continue
+                valid = valid and all(
+                    isinstance(state, dict)
+                    and state.get("version") == global_steps
+                    and state.get("completed_updates", 0) > 0
+                    and isinstance(state.get("local_rank"), int)
+                    for state in shard
+                )
+                if valid:
+                    valid = len({state["local_rank"] for state in shard}) == expected_tp
+            if not valid:
+                raise RuntimeError(f"Weight version is unconfirmed on every TP worker: expected={global_steps}, {states=}")
+            log_root = os.environ.get("VERL_DYNAMO_LOG_DIR")
+            if log_root:
+                record_path = os.path.join(
+                    log_root, f"weight_versions_replica{self.replica_rank}_node{self.node_rank}.jsonl"
+                )
+                with open(record_path, "a") as stream:
+                    stream.write(json.dumps({"time_unix": time.time(), "version": global_steps,
+                                             "endpoints": self._control_endpoints, "workers": states}) + "\n")
         self.global_steps = global_steps
 
     async def release_kv_cache(self):
@@ -2962,6 +2989,8 @@ class DynamoHttpServer:
                 reply = pickle.loads(reply_bytes)
                 if not reply.get("ok"):
                     raise RuntimeError(f"engine_method {method} failed @ {ep}: {reply.get('error')}")
+                if method == "reset_prefix_cache" and reply.get("result") is False:
+                    raise RuntimeError(f"reset_prefix_cache refused @ {ep}; refusing stale-policy rollouts")
             finally:
                 sock.close()
 
@@ -3419,6 +3448,18 @@ class DynamoReplica(RolloutReplica):
         num_logical_replicas = len(self.workers) // self.world_size
         await self._launch_shared_worker_pool(num_logical_replicas=num_logical_replicas)
 
+    def _pd_shard_roles(self) -> list[str]:
+        """Apply P/D roles only to the standalone rollout pool."""
+        disagg = ((self.config.engine_kwargs or {}).get("dynamo") or {}).get("disaggregation") or {}
+        shard_roles = list(disagg.get("shard_roles") or []) if disagg.get("enabled") else []
+        if self.rollout_mode != RolloutMode.STANDALONE:
+            shard_roles = []
+        if shard_roles:
+            if set(shard_roles) != {"prefill", "decode"}:
+                raise ValueError("P/D shard_roles must contain both prefill and decode, with no other roles")
+            logger.info("[DynamoReplica pool] P/D roles=%s mode=%s", shard_roles, self.rollout_mode)
+        return shard_roles
+
     async def _launch_shared_worker_pool(self, num_logical_replicas: int):
         """Launch a single frontend backed by all logical replica workers."""
         from verl.utils.device import get_resource_name
@@ -3455,8 +3496,7 @@ class DynamoReplica(RolloutReplica):
                 node_to_workers[node_id] = []
                 node_to_specs[node_id] = []
 
-        disagg = ((self.config.engine_kwargs or {}).get("dynamo") or {}).get("disaggregation") or {}
-        shard_roles = list(disagg.get("shard_roles") or []) if disagg.get("enabled") else []
+        shard_roles = self._pd_shard_roles()
 
         for logical_replica_rank in range(num_logical_replicas):
             start = logical_replica_rank * self.world_size

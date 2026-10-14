@@ -170,7 +170,7 @@ class VllmDynamoServerAdapter(_VllmServerAdapter):
         future = await self._execute_method(
             "update_weights_from_ipc",
             non_block=True,
-            kwargs={**kwargs, "use_shm": self.use_shm},
+            kwargs={**kwargs, "use_shm": self.use_shm, "weight_version": global_steps},
         )
         logger.debug(
             f"{tag} RPC fired +{_time.time() - t_enter:.2f}s "
@@ -248,7 +248,7 @@ class VllmDynamoServerAdapter(_VllmServerAdapter):
                 )
                 logger.debug(f"{tag} kv cache cleared")
             except asyncio.TimeoutError:
-                logger.warning(f"{tag} clear_kv_cache TIMEOUT 30s (continuing; prefix cache may be stale)")
+                raise RuntimeError(f"{tag} clear_kv_cache timed out; refusing stale-policy rollouts") from None
             if global_steps is not None:
                 try:
                     await asyncio.wait_for(
@@ -256,7 +256,7 @@ class VllmDynamoServerAdapter(_VllmServerAdapter):
                         timeout=10,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(f"{tag} set_global_steps TIMEOUT 10s")
+                    raise RuntimeError(f"{tag} set_global_steps timed out; weight version is unconfirmed") from None
 
         logger.debug(f"{tag} EXIT +{_time.time() - t_enter:.2f}s")
 

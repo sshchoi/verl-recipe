@@ -31,7 +31,7 @@ from verl.workers.rollout.vllm_rollout.utils import vLLMColocateWorkerExtension
 class vLLMDynamoColocateWorkerExtension(vLLMColocateWorkerExtension):
     """vLLM worker mixin for verl × dynamo."""
 
-    def update_weights_from_ipc(self, *args, **kwargs):
+    def update_weights_from_ipc(self, *args, weight_version=None, **kwargs):
         """Run verl's weight reload inside vLLM's config context.
 
         vLLM 0.20's FlashInfer MoE post-load path calls
@@ -41,9 +41,21 @@ class vLLMDynamoColocateWorkerExtension(vLLMColocateWorkerExtension):
         """
         vllm_config = getattr(getattr(self, "model_runner", None), "vllm_config", None)
         if vllm_config is None:
-            return super().update_weights_from_ipc(*args, **kwargs)
+            result = super().update_weights_from_ipc(*args, **kwargs)
+        else:
+            from vllm.config import set_current_vllm_config
 
-        from vllm.config import set_current_vllm_config
+            with set_current_vllm_config(vllm_config):
+                result = super().update_weights_from_ipc(*args, **kwargs)
+        # Acknowledge only after IPC and all post-load processing succeeded.
+        self._verl_weight_version = weight_version
+        self._verl_weight_updates = getattr(self, "_verl_weight_updates", 0) + 1
+        return result
 
-        with set_current_vllm_config(vllm_config):
-            return super().update_weights_from_ipc(*args, **kwargs)
+    def get_weight_update_state(self):
+        """Read back this TP worker's completed reload, not a coordinator stamp."""
+        return {
+            "version": getattr(self, "_verl_weight_version", None),
+            "completed_updates": getattr(self, "_verl_weight_updates", 0),
+            "local_rank": self.local_rank,
+        }
