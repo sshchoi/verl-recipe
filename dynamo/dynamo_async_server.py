@@ -1016,7 +1016,7 @@ class DynamoHttpServer:
                 env[_DYN_SYSTEM_PORT_ENV] = str(system_metrics_port)
                 worker_metrics_endpoint = f"{self._server_address}:{system_metrics_port}"
                 self._worker_metrics_endpoints.append(worker_metrics_endpoint)
-                self._record_worker_metrics_endpoint(worker_metrics_endpoint)
+                self._record_worker_metrics_endpoint(worker_metrics_endpoint, role=spec.role)
                 if is_sglang:
                     host = (
                         f"[{self._server_address}]"
@@ -1089,7 +1089,7 @@ class DynamoHttpServer:
             )
             self._engine_processes.append(proc)
 
-    def _record_worker_metrics_endpoint(self, endpoint: str) -> None:
+    def _record_worker_metrics_endpoint(self, endpoint: str, role: str = "agg") -> None:
         """Append a worker /metrics endpoint to a per-(replica,node) file so an
         external monitoring sidecar can discover and scrape it. The engine-level
         vllm:prefix_cache_* metrics live on the worker, not the frontend, so this
@@ -1104,6 +1104,10 @@ class DynamoHttpServer:
             with open(path, "a") as f:
                 f.write(endpoint + "\n")
                 f.flush()
+            if role in ("prefill", "decode"):
+                pd_path = os.path.join(out_dir, f"r{self.replica_rank}_n{self.node_rank}.pd-endpoints")
+                with open(pd_path, "a") as f:
+                    f.write(endpoint + "\n")
         except Exception as exc:  # best-effort; never block worker startup
             logger.warning("[DynamoHttpServer] failed to record worker metrics endpoint %s: %s", endpoint, exc)
 
