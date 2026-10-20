@@ -25,7 +25,53 @@ trainer/CE sender side computes. No ``_get_zmq_handle`` override needed.
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
+
 from verl.workers.rollout.vllm_rollout.utils import vLLMColocateWorkerExtension
+
+
+@contextmanager
+def _bucketed_tied_weights(model):
+    """Validate vLLM 0.31 tied embeddings over an entire IPC reload.
+
+    AutoWeightsLoader checks a complete checkpoint per call, whereas veRL
+    invokes model.load_weights once per bucket. Filter redundant aliases per
+    bucket, but still require their canonical parameters to load in this sync.
+    """
+    from vllm.model_executor.models import utils
+
+    get_aliases = getattr(utils, "_get_tied_embedding_params", None)
+    aliases = get_aliases(model) if get_aliases else {}
+    if not aliases:
+        yield
+        return
+    original = model.load_weights
+    had_override = "load_weights" in model.__dict__
+    loaded, skipped = set(), set()
+
+    def load_bucket(weights):
+        def canonical_weights():
+            for name, tensor in weights:
+                if name in aliases:
+                    skipped.add(name)
+                else:
+                    yield name, tensor
+
+        result = original(canonical_weights())
+        loaded.update(result or ())
+        return result
+
+    model.load_weights = load_bucket
+    try:
+        yield
+        missing = {aliases[name] for name in skipped} - loaded
+        if missing:
+            raise RuntimeError(f"Tied weights missing from completed IPC reload: {sorted(missing)}")
+    finally:
+        if had_override:
+            model.load_weights = original
+        else:
+            del model.load_weights
 
 
 class vLLMDynamoColocateWorkerExtension(vLLMColocateWorkerExtension):
@@ -40,13 +86,14 @@ class vLLMDynamoColocateWorkerExtension(vLLMColocateWorkerExtension):
         collective_rpc, so set it explicitly in the TP worker process.
         """
         vllm_config = getattr(getattr(self, "model_runner", None), "vllm_config", None)
-        if vllm_config is None:
-            result = super().update_weights_from_ipc(*args, **kwargs)
-        else:
-            from vllm.config import set_current_vllm_config
+        with ExitStack() as stack:
+            if vllm_config is not None:
+                from vllm.config import set_current_vllm_config
 
-            with set_current_vllm_config(vllm_config):
-                result = super().update_weights_from_ipc(*args, **kwargs)
+                stack.enter_context(set_current_vllm_config(vllm_config))
+                for model in self._iter_all_models():
+                    stack.enter_context(_bucketed_tied_weights(model))
+            result = super().update_weights_from_ipc(*args, **kwargs)
         # Acknowledge only after IPC and all post-load processing succeeded.
         self._verl_weight_version = weight_version
         self._verl_weight_updates = getattr(self, "_verl_weight_updates", 0) + 1
