@@ -26,6 +26,7 @@ Reference impl: nemo_rl/models/generation/dynamo/dynamo_generation.py.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from typing import Any, Optional
 
 import ray
@@ -3396,6 +3397,21 @@ class DynamoReplica(RolloutReplica):
             actors.append(actor)
         return actors
 
+    def _configure_standalone_residency(self):
+        """Keep dedicated rollout engines resident without changing the hybrid pool.
+
+        The shared rollout config's free_cache_engine flag belongs to the
+        trainer's sleeping hybrid pool. Dedicated engines keep their weights
+        and KV allocation through abort/refit/resume cycles.
+        """
+        self.config = copy.deepcopy(self.config)
+        if is_dataclass(self.config):
+            self.config = replace(self.config, free_cache_engine=False)
+        else:
+            self.config.free_cache_engine = False
+        dynamo = (self.config.engine_kwargs or {}).get("dynamo", {})
+        dynamo.pop("free_engine_on_train", None)
+
     async def init_standalone_pool(self):
         """Standalone shared worker pool over rollout.nnodes × n_gpus_per_node.
 
@@ -3409,6 +3425,7 @@ class DynamoReplica(RolloutReplica):
         from verl.utils.device import get_device_name
 
         self.rollout_mode = RolloutMode.STANDALONE
+        self._configure_standalone_residency()
         pool_nnodes = self.config.nnodes
         pool_gpus_per_node = self.config.n_gpus_per_node
         assert pool_nnodes > 0 and pool_gpus_per_node > 0, (

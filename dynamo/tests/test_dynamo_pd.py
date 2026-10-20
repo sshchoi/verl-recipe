@@ -127,3 +127,20 @@ def test_standalone_resident_pd_is_allowed(free_engine):
 
 def test_aggregated_pool_can_still_sleep():
     assert replica(RolloutMode.STANDALONE, enabled=False, sleeping=True)._pd_shard_roles() == []
+
+
+@pytest.mark.parametrize("real_config", [False, True])
+def test_standalone_residency_does_not_mutate_hybrid_config(real_config):
+    result = replica(RolloutMode.STANDALONE, sleeping=True, free_engine=True)
+    if real_config:
+        from verl.workers.config import RolloutConfig
+
+        result.config = RolloutConfig(name="dynamo", **vars(result.config))
+    hybrid_config = result.config
+    result._configure_standalone_residency()
+    assert result.config is not hybrid_config
+    assert not result.config.free_cache_engine
+    assert "free_engine_on_train" not in result.config.engine_kwargs["dynamo"]
+    assert result._pd_shard_roles() == ["prefill", "decode"]
+    assert hybrid_config.free_cache_engine
+    assert hybrid_config.engine_kwargs["dynamo"]["free_engine_on_train"] is True
