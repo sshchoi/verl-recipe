@@ -94,6 +94,7 @@ def test_pristine_upstream_setup_runs_with_info_enabled(compat, monkeypatch):
     trainer.llm_server_manager = SimpleNamespace(rollout_replicas=[])
     trainer.actor_rollout_wg = object()
     trainer._enable_hybrid_replicas = False
+    trainer.add_replicas_to_balancer = lambda: None
     with monkeypatch.context() as baseline:
         baseline.setattr(upstream.logger, "info", logging.Logger.info.__get__(upstream.logger))
         with pytest.raises(TypeError, match="flush"):

@@ -912,7 +912,9 @@ def test_facade_imports_without_vllm(monkeypatch):
             raise importlib.metadata.PackageNotFoundError("vllm missing (simulated)")
         return real_import(name, *args, **kwargs)
 
-    for mod in [m for m in sys.modules if m.startswith("recipe.dynamo.dynamo_rollout")]:
+    for mod in [
+        m for m in sys.modules if m.startswith(("recipe.dynamo.dynamo_rollout", "recipe.dynamo.dynamo_vllm_rollout"))
+    ]:
         del sys.modules[mod]
     monkeypatch.setattr("builtins.__import__", no_vllm)
 
