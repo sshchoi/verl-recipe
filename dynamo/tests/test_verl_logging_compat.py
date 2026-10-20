@@ -69,9 +69,14 @@ def test_pristine_upstream_setup_runs_with_info_enabled(compat, monkeypatch):
     pytest.importorskip("verl")
     # Keep the complete upstream _setup control flow and real INFO logging;
     # replace only resource allocation and model/checkpoint initialization.
+    import inspect
+
     from omegaconf import OmegaConf
 
     from verl.trainer.ppo.v1 import trainer_separate_async as upstream
+
+    if "flush=True" not in inspect.getsource(upstream.PPOTrainerSeparateAsync._setup):
+        pytest.skip("installed veRL pin predates the upstream flush keyword regression")
 
     records = []
     monkeypatch.setattr(upstream.logger, "handle", records.append)
