@@ -51,6 +51,11 @@ Use separate environments for the two inference engines. The tested versions are
 | Inference engine | vLLM 0.28.0 **or** SGLang 0.5.19 |
 | V1 trainer | TransferQueue 0.1.9; CuPy matching CUDA for the separate-pool NCCL backend |
 
+For **prefill/decode (P/D) disaggregation** with vLLM, use vLLM 0.31.1rc0 with
+NIXL 1.5.0 and UCX 1.23, and enable the [NIXL failure guard](NIXL_GUARD.md).
+This stack was validated with V1 `separate_async` in a Dynamo 1.6.0 dev image,
+on B200 with prefill and decode on the same node; cross-node P/D is untested.
+
 For **Uni-Agent + vLLM 0.24 + ThunderAgent + V1 async**, use the dedicated
 [usage guide](THUNDERAGENT_VLLM024.md) and its pinned versions and launcher.
 Its [fully async launcher](run_uniagent_thunderagent_vllm024_fully_async.sh)
