@@ -27,5 +27,6 @@ until a subsequent poll; the guard cannot certify already-consumed trajectories
 or undo an optimizer update. An unobserved reset at the same endpoint is also
 undetectable if the exporter omits counter creation timestamps. The engine must still propagate receive failures
 before generating tokens. On an alert, stop the rollout step, discard trajectories
-from the failure window, restart the affected worker, and verify healthy transfers
+from the failure window, restart both workers of the affected P/D pair (restarting
+one side alone did not recover in testing), and verify healthy transfers
 and output correctness before resuming from a clean state.
